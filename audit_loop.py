@@ -1,21 +1,12 @@
 """
-Core iterative audit loop.
+Core iterative audit loop with explicit Chain-of-Thought prompting.
 
-Architecture (from project requirements):
-    Step 0: Model A proposes an answer.
-    Step 1: Model B audits and revises it.
-    Step 2: Model A audits again.
-    Step 3: Model B audits again.
-    ... up to MAX_STEPS total answers, or early stop on high agreement.
+At every step, the model is instructed to:
+    1. Think through the problem step by step
+    2. Label each reasoning step clearly
+    3. State the final answer in a parseable format
 
-At each step, we also sample the current auditor 5 times to compute
-majority-vote agreement as an uncertainty proxy.
-
-This design draws on:
-- LMvLM (Cohen et al., 2023): using one LM to cross-examine another's claims
-- Self-Refine (Madaan et al., 2023): iterative refinement with self-feedback
-- The survey by Kamoi et al. (2024) showing that external/cross-model feedback
-  is more reliable than pure intrinsic self-correction
+The full CoT trace is preserved in the results for analysis.
 """
 
 from ollama_client import generate
@@ -27,25 +18,49 @@ from config import (
     UNCERTAINTY_SAMPLES,
     TEMPERATURE_GREEDY,
     SEED_MAIN,
+    SAVE_COT,
 )
 
-# ── System Prompts ───────────────────────────────────────────────
+# ── System Prompts with explicit CoT instructions ────────────────
 
-PROPOSER_SYSTEM = (
-    "You are a math problem solver. Solve the given math word problem "
-    "step by step. Show your reasoning clearly, then state your final "
-    "numerical answer on the last line in the format: 'The answer is <number>'."
-)
+PROPOSER_SYSTEM = """You are a math problem solver. Solve the given math word problem using a clear chain of thought.
 
-AUDITOR_SYSTEM = (
-    "You are a math auditor. You will be given a math word problem and a "
-    "proposed solution. Your job is to:\n"
-    "1. Carefully check each step of the solution for errors.\n"
-    "2. If you find errors, explain them and provide the corrected solution.\n"
-    "3. If the solution is correct, confirm it.\n"
-    "4. Always state your final numerical answer on the last line in the "
-    "format: 'The answer is <number>'."
-)
+You MUST follow this format:
+
+## Reasoning
+Step 1: [Identify what is given and what is asked]
+Step 2: [Set up the approach]
+Step 3: [Perform calculations]
+... (as many steps as needed)
+
+## Verification
+[Double-check your key calculations]
+
+## Final Answer
+The answer is <number>"""
+
+AUDITOR_SYSTEM = """You are a math auditor. You will be given a math word problem and a proposed solution. Audit it using a clear chain of thought.
+
+You MUST follow this format:
+
+## Audit of Proposed Solution
+Step 1: [Check the first claim/calculation in the proposed solution]
+Step 2: [Check the next claim/calculation]
+... (check each step)
+
+## Errors Found
+[List any errors, or state "No errors found"]
+
+## Corrected Reasoning (if errors were found)
+Step 1: [Your corrected calculation]
+Step 2: [Continue...]
+... 
+
+## Verification
+[Double-check your corrected answer]
+
+## Final Answer
+The answer is <number>"""
 
 def run_audit_loop(question: str) -> dict:
     """
@@ -54,30 +69,32 @@ def run_audit_loop(question: str) -> dict:
     Returns:
         Dict with:
             - question: the original question
-            - steps: list of step dicts (response, answer, uncertainty info)
+            - steps: list of step dicts, each containing full CoT traces
             - final_answer: the last answer produced
-            - total_calls: total number of LLM calls (main + uncertainty samples)
+            - total_calls: total number of LLM calls
             - stopped_early: whether we stopped due to high agreement
+            - chain_of_thought: ordered list of CoT traces across all steps
     """
     steps = []
     total_calls = 0
     previous_response = None
+    chain_of_thought = []  # Collects CoT across all steps
 
     for step_idx in range(MAX_STEPS):
-        # Determine role: even steps = Model A, odd steps = Model B
         is_proposer = step_idx == 0
         role = "proposer" if is_proposer else ("auditor_B" if step_idx % 2 == 1 else "auditor_A")
 
         if is_proposer:
             system_prompt = PROPOSER_SYSTEM
-            prompt = f"Problem:\n{question}"
+            prompt = f"Problem:\n{question}\n\nSolve this step by step."
         else:
             system_prompt = AUDITOR_SYSTEM
             prompt = (
                 f"Problem:\n{question}\n\n"
                 f"Proposed solution:\n{previous_response}\n\n"
-                f"Please audit this solution. Check each step for correctness. "
-                f"If there are errors, provide the corrected solution with the right answer."
+                f"Carefully audit every step of this solution. "
+                f"Check each calculation. If you find any errors, "
+                f"provide the full corrected solution with all steps shown."
             )
 
         # ── Main generation (greedy / deterministic) ─────────────
@@ -88,7 +105,6 @@ def run_audit_loop(question: str) -> dict:
             seed=SEED_MAIN,
         )
         total_calls += 1
-
         main_answer = extract_numerical_answer(response)
 
         # ── Uncertainty estimation (5 stochastic samples) ────────
@@ -99,6 +115,31 @@ def run_audit_loop(question: str) -> dict:
         )
         total_calls += UNCERTAINTY_SAMPLES
 
+        # ── Build CoT trace for this step ────────────────────────
+        cot_entry = {
+            "step": step_idx,
+            "role": role,
+            "system_prompt": system_prompt,
+            "user_prompt": prompt,
+            "chain_of_thought": response,  # Full CoT response
+            "extracted_answer": main_answer,
+            "uncertainty_samples": [],
+        }
+
+        # Store CoT from each uncertainty sample too
+        if SAVE_COT:
+            for sample_idx, (sample_text, sample_answer) in enumerate(
+                zip(uncertainty["samples"], uncertainty["answers"])
+            ):
+                cot_entry["uncertainty_samples"].append({
+                    "sample_idx": sample_idx,
+                    "chain_of_thought": sample_text,
+                    "extracted_answer": sample_answer,
+                })
+
+        chain_of_thought.append(cot_entry)
+
+        # ── Step data (same as before, plus CoT) ─────────────────
         step_data = {
             "step": step_idx,
             "role": role,
@@ -112,15 +153,12 @@ def run_audit_loop(question: str) -> dict:
             },
         }
         steps.append(step_data)
-
         previous_response = response
 
-        # ── Early stopping: high agreement ───────────────────────
+        # ── Early stopping ───────────────────────────────────────
         if uncertainty["agreement_count"] >= AGREEMENT_THRESHOLD:
             break
 
-    # Use the majority answer from the last step's uncertainty samples
-    # as the final answer (more robust than single greedy pass)
     last_step = steps[-1]
     final_answer = last_step["uncertainty"]["majority_answer"] or last_step["answer"]
 
@@ -131,4 +169,5 @@ def run_audit_loop(question: str) -> dict:
         "num_steps": len(steps),
         "total_calls": total_calls,
         "stopped_early": len(steps) < MAX_STEPS,
+        "chain_of_thought": chain_of_thought,  # Full CoT trace
     }

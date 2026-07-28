@@ -1,39 +1,23 @@
 """
-Evaluation and reporting.
-
-Reports (as required by Roadmap item 3):
-    - Accuracy per step
-    - Average number of LLM calls
-    - False-certainty cases (high agreement but wrong answer)
-    - Uncertainty-drops-but-still-wrong cases
+Evaluation and reporting — now with detailed CoT trace output.
 """
 
 import json
 import os
 from collections import defaultdict
 
-import pandas as pd
 import numpy as np
 
 from utils import answers_match
 
 def evaluate_results(results: list[dict], output_dir: str) -> dict:
     """
-    Compute all required metrics and save reports.
-
-    Args:
-        results: List of result dicts from run_audit_loop, each augmented
-                 with 'gold_answer'.
-        output_dir: Directory to save reports.
-
-    Returns:
-        Summary dict with all metrics.
+    Compute all required metrics and save reports including CoT traces.
     """
     os.makedirs(output_dir, exist_ok=True)
 
     # ── 1. Accuracy per step ─────────────────────────────────────
     step_correct = defaultdict(list)
-    step_answers = defaultdict(list)
 
     for r in results:
         gold = r["gold_answer"]
@@ -42,13 +26,6 @@ def evaluate_results(results: list[dict], output_dir: str) -> dict:
             ans = step_data["uncertainty"]["majority_answer"] or step_data["answer"]
             is_correct = answers_match(ans, gold)
             step_correct[step_idx].append(is_correct)
-            step_answers[step_idx].append({
-                "question": r["question"][:80],
-                "predicted": ans,
-                "gold": gold,
-                "correct": is_correct,
-                "agreement": step_data["uncertainty"]["agreement"],
-            })
 
     accuracy_per_step = {}
     for step_idx in sorted(step_correct.keys()):
@@ -67,7 +44,7 @@ def evaluate_results(results: list[dict], output_dir: str) -> dict:
     avg_steps = np.mean(num_steps_list)
     early_stop_rate = sum(1 for r in results if r["stopped_early"]) / len(results)
 
-    # ── 3. Final accuracy (last step per example) ────────────────
+    # ── 3. Final accuracy ────────────────────────────────────────
     final_correct = []
     for r in results:
         gold = r["gold_answer"]
@@ -76,7 +53,6 @@ def evaluate_results(results: list[dict], output_dir: str) -> dict:
     final_accuracy = sum(final_correct) / len(final_correct) if final_correct else 0.0
 
     # ── 4. False-certainty cases ─────────────────────────────────
-    # High agreement (>= threshold) but wrong final answer
     false_certainty = []
     for r in results:
         gold = r["gold_answer"]
@@ -92,6 +68,7 @@ def evaluate_results(results: list[dict], output_dir: str) -> dict:
                 "gold_answer": gold,
                 "agreement": agreement,
                 "num_steps": r["num_steps"],
+                "chain_of_thought": r.get("chain_of_thought", []),
             })
 
     # ── 5. Uncertainty drops but still wrong ─────────────────────
@@ -102,7 +79,6 @@ def evaluate_results(results: list[dict], output_dir: str) -> dict:
         if len(steps) < 2:
             continue
 
-        # Check if uncertainty decreased (agreement increased) across steps
         first_agreement = steps[0]["uncertainty"]["agreement"]
         last_agreement = steps[-1]["uncertainty"]["agreement"]
         final_ans = r["final_answer"]
@@ -116,6 +92,7 @@ def evaluate_results(results: list[dict], output_dir: str) -> dict:
                 "agreement_first_step": first_agreement,
                 "agreement_last_step": last_agreement,
                 "num_steps": r["num_steps"],
+                "chain_of_thought": r.get("chain_of_thought", []),
             })
 
     # ── Build summary ────────────────────────────────────────────
@@ -131,17 +108,24 @@ def evaluate_results(results: list[dict], output_dir: str) -> dict:
     }
 
     # ── Save outputs ─────────────────────────────────────────────
+
+    # 1. Summary (same as before)
     with open(os.path.join(output_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
+    # 2. Full results with CoT
+    with open(os.path.join(output_dir, "full_results.json"), "w") as f:
+        json.dump(results, f, indent=2, default=str)
+
+    # 3. Error analysis files with CoT
     with open(os.path.join(output_dir, "false_certainty_cases.json"), "w") as f:
         json.dump(false_certainty, f, indent=2)
 
     with open(os.path.join(output_dir, "uncertainty_drop_wrong.json"), "w") as f:
         json.dump(uncertainty_drop_wrong, f, indent=2)
 
-    with open(os.path.join(output_dir, "full_results.json"), "w") as f:
-        json.dump(results, f, indent=2, default=str)
+    # ── 6. NEW: Detailed CoT trace file (human-readable) ────────
+    _save_cot_report(results, output_dir)
 
     # ── Print report ─────────────────────────────────────────────
     print("\n" + "=" * 65)
@@ -162,22 +146,66 @@ def evaluate_results(results: list[dict], output_dir: str) -> dict:
     print(f"  False-certainty cases:     {len(false_certainty)}")
     print(f"  Uncertainty ↓ but wrong:   {len(uncertainty_drop_wrong)}")
     print("=" * 65)
-
-    if false_certainty:
-        print("\n  📌 Sample false-certainty case:")
-        fc = false_certainty[0]
-        print(f"     Q: {fc['question'][:100]}...")
-        print(f"     Predicted: {fc['final_answer']}  |  Gold: {fc['gold_answer']}")
-        print(f"     Agreement: {fc['agreement']}")
-
-    if uncertainty_drop_wrong:
-        print("\n  📌 Sample uncertainty-drop-but-wrong case:")
-        ud = uncertainty_drop_wrong[0]
-        print(f"     Q: {ud['question'][:100]}...")
-        print(f"     Predicted: {ud['final_answer']}  |  Gold: {ud['gold_answer']}")
-        print(f"     Agreement: {ud['agreement_first_step']} → {ud['agreement_last_step']}")
-
-    print(f"\n  Results saved to: {output_dir}/")
+    print(f"\n  📄 CoT traces saved to:    {output_dir}/cot_traces.md")
+    print(f"  📄 Full results saved to:  {output_dir}/full_results.json")
     print()
 
     return summary
+
+def _save_cot_report(results: list[dict], output_dir: str):
+    """
+    Save a human-readable Markdown file with full CoT traces for every
+    example at every step.
+    """
+    filepath = os.path.join(output_dir, "cot_traces.md")
+
+    with open(filepath, "w") as f:
+        f.write("# Chain-of-Thought Traces — Iterative Audit Loop\n\n")
+        f.write("---\n\n")
+
+        for r in results:
+            idx = r.get("example_idx", "?")
+            gold = r["gold_answer"]
+            final = r["final_answer"]
+            correct = "✅" if answers_match(final, gold) else "❌"
+            stopped = "Yes" if r["stopped_early"] else "No"
+
+            f.write(f"## Example {idx}\n\n")
+            f.write(f"**Question:** {r['question']}\n\n")
+            f.write(f"**Gold Answer:** {gold}\n\n")
+            f.write(f"**Final Answer:** {final} {correct}\n\n")
+            f.write(f"**Steps Used:** {r['num_steps']} | "
+                    f"**Early Stop:** {stopped} | "
+                    f"**Total Calls:** {r['total_calls']}\n\n")
+
+            # ── CoT for each step ────────────────────────────────
+            cot_list = r.get("chain_of_thought", [])
+            for cot in cot_list:
+                step = cot["step"]
+                role = cot["role"]
+                answer = cot["extracted_answer"]
+
+                f.write(f"### Step {step} — {role.replace('_', ' ').title()}\n\n")
+
+                # Main CoT response
+                f.write(f"**Extracted Answer:** `{answer}`\n\n")
+                f.write(f"<details>\n")
+                f.write(f"<summary>📝 Full Chain of Thought (click to expand)</summary>\n\n")
+                f.write(f"```\n{cot['chain_of_thought']}\n```\n\n")
+                f.write(f"</details>\n\n")
+
+                # Uncertainty samples
+                samples = cot.get("uncertainty_samples", [])
+                if samples:
+                    sample_answers = [s["extracted_answer"] for s in samples]
+                    f.write(f"**Uncertainty Samples:** {sample_answers}\n\n")
+
+                    f.write(f"<details>\n")
+                    f.write(f"<summary>🎲 Uncertainty Sample CoTs "
+                            f"({len(samples)} samples, click to expand)</summary>\n\n")
+                    for s in samples:
+                        f.write(f"**Sample {s['sample_idx']}** → `{s['extracted_answer']}`\n\n")
+                        f.write(f"```\n{s['chain_of_thought']}\n```\n\n")
+                    f.write(f"</details>\n\n")
+
+            f.write("---\n\n")
