@@ -1,0 +1,31 @@
+{
+  "num_examples": 50,
+  "final_accuracy_pct": 76.0,
+  "accuracy_per_step": {
+    "0": {
+      "accuracy": 80.0,
+      "num_examples": 50,
+      "num_correct": 40
+    },
+    "1": {
+      "accuracy": 35.29,
+      "num_examples": 17,
+      "num_correct": 6
+    },
+    "2": {
+      "accuracy": 29.41,
+      "num_examples": 17,
+      "num_correct": 5
+    },
+    "3": {
+      "accuracy": 31.25,
+      "num_examples": 16,
+      "num_correct": 5
+    }
+  },
+  "avg_total_calls": 12.0,
+  "avg_num_steps": 2.0,
+  "early_stop_rate_pct": 68.0,
+  "false_certainty_count": 1,
+  "uncertainty_drop_but_wrong_count": 4
+}
