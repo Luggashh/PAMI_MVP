@@ -1,46 +1,37 @@
-"""
-Load GSM8K dataset from HuggingFace and extract ground-truth answers.
-"""
-
 from datasets import load_dataset
-import re
+from typing import List, Dict, Any
+from config import config
 
-def load_gsm8k(split: str = "test", num_examples: int | None = None) -> list[dict]:
+def load_full_gsm8k() -> List[Dict[str, Any]]:
     """
-    Load GSM8K examples.
-
-    Each example has:
-        - question: the math word problem
-        - answer: the ground-truth final numerical answer
-        - solution: the full chain-of-thought solution
-
-    Returns:
-        List of dicts with keys: question, answer, solution
+    Loads 100% of the GSM8K dataset by concatenating both 'train' and 'test' splits,
+    removing any partition between train/test data.
     """
-    dataset = load_dataset("openai/gsm8k", "main", split=split)
+    print(f"[DataLoader] Loading GSM8K dataset ({config.DATASET_NAME})...")
+    dataset = load_dataset(config.DATASET_NAME, config.DATASET_CONFIG)
+    
+    combined_data = []
+    
+    if config.USE_FULL_DATASET:
+        splits = ['train', 'test']
+    else:
+        splits = ['test']
+        
+    for split in splits:
+        for idx, item in enumerate(dataset[split]):
+            combined_data.append({
+                "id": f"{split}_{idx}",
+                "question": item["question"],
+                "ground_truth_raw": item["answer"],
+                "ground_truth_num": extract_gsm8k_ground_truth(item["answer"])
+            })
+            
+    print(f"[DataLoader] Successfully loaded total of {len(combined_data)} questions (100% unpartitioned).")
+    return combined_data
 
-    examples = []
-    for item in dataset:
-        question = item["question"]
-        full_answer = item["answer"]
-
-        # GSM8K format: "#### <number>" at the end
-        numerical_answer = extract_gsm8k_answer(full_answer)
-
-        examples.append({
-            "question": question,
-            "answer": numerical_answer,
-            "solution": full_answer,
-        })
-
-        if num_examples and len(examples) >= num_examples:
-            break
-
-    return examples
-
-def extract_gsm8k_answer(answer_text: str) -> str:
-    """Extract the final numerical answer from GSM8K '#### <number>' format."""
-    match = re.search(r"####\s*(.+)", answer_text)
-    if match:
-        return match.group(1).strip().replace(",", "")
-    return answer_text.strip()
+def extract_gsm8k_ground_truth(answer_str: str) -> str:
+    """Extracts the final numerical value following #### in GSM8K answers."""
+    if "####" in answer_str:
+        num = answer_str.split("####")[-1].strip().replace(",", "")
+        return num
+    return ""
