@@ -7,7 +7,7 @@ class AuditConfig(BaseModel):
     MODEL_B_NAME: str = "llama3.2:3b"
     
     # GSM8K Dataset Settings
-    DATASET_NAME: str = "gsm8k"
+    DATASET_NAME: str = "/openai/gsm8k"
     DATASET_CONFIG: str = "main"
     USE_FULL_DATASET: bool = True  # Combine train + test splits (100%)
     
