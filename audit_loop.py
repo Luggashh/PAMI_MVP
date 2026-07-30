@@ -1,173 +1,99 @@
-"""
-Core iterative audit loop with explicit Chain-of-Thought prompting.
+from typing import List, Dict, Any
+from utils import extract_numerical_answer, calculate_uncertainty_proxy
+from config import config
 
-At every step, the model is instructed to:
-    1. Think through the problem step by step
-    2. Label each reasoning step clearly
-    3. State the final answer in a parseable format
+def build_prompt(question: str, audit_history: List[Dict[str, Any]], step: int) -> str:
+    """Constructs prompt for initial proposal or auditor revision."""
+    if step == 0:
+        return f"Solve the following math problem step-by-step. End your solution with '#### [final answer]'.\n\nQuestion: {question}\n\nSolution:"
+    
+    prev_turn = audit_history[-1]
+    prompt = (
+        f"You are an expert auditor. Review the previous answer to the math problem below.\n"
+        f"Question: {question}\n\n"
+        f"Previous Solution:\n{prev_turn['response']}\n\n"
+        f"Audit and revise the solution if there are errors. Provide your complete revised step-by-step reasoning "
+        f"and end with '#### [final answer]'."
+    )
+    return prompt
 
-The full CoT trace is preserved in the results for analysis.
-"""
-
-from ollama_client import generate
-from uncertainty import compute_uncertainty
-from utils import extract_numerical_answer
-from config import (
-    MAX_STEPS,
-    AGREEMENT_THRESHOLD,
-    UNCERTAINTY_SAMPLES,
-    TEMPERATURE_GREEDY,
-    SEED_MAIN,
-    SAVE_COT,
-)
-
-# ── System Prompts with explicit CoT instructions ────────────────
-
-PROPOSER_SYSTEM = """You are a math problem solver. Solve the given math word problem using a clear chain of thought.
-
-You MUST follow this format:
-
-## Reasoning
-Step 1: [Identify what is given and what is asked]
-Step 2: [Set up the approach]
-Step 3: [Perform calculations]
-... (as many steps as needed)
-
-## Verification
-[Double-check your key calculations]
-
-## Final Answer
-The answer is <number>"""
-
-AUDITOR_SYSTEM = """You are a math auditor. You will be given a math word problem and a proposed solution. Audit it using a clear chain of thought.
-
-You MUST follow this format:
-
-## Audit of Proposed Solution
-Step 1: [Check the first claim/calculation in the proposed solution]
-Step 2: [Check the next claim/calculation]
-... (check each step)
-
-## Errors Found
-[List any errors, or state "No errors found"]
-
-## Corrected Reasoning (if errors were found)
-Step 1: [Your corrected calculation]
-Step 2: [Continue...]
-... 
-
-## Verification
-[Double-check your corrected answer]
-
-## Final Answer
-The answer is <number>"""
-
-def run_audit_loop(question: str) -> dict:
+def execute_audit_loop(dataset: List[Dict[str, Any]], engine_a, engine_b) -> List[Dict[str, Any]]:
     """
-    Run the full iterative audit loop for a single GSM8K question.
-
-    Returns:
-        Dict with:
-            - question: the original question
-            - steps: list of step dicts, each containing full CoT traces
-            - final_answer: the last answer produced
-            - total_calls: total number of LLM calls
-            - stopped_early: whether we stopped due to high agreement
-            - chain_of_thought: ordered list of CoT traces across all steps
+    Executes the 4-step iterative audit loop across all questions.
+    Roadmap:
+      Step 1: Model A proposes initial answer.
+      Step 2: Model B audits and revises.
+      Step 3: Model A audits and revises.
+      Step 4: Model B audits and revises.
+      Early Stopping: High numerical answer agreement (e.g. >= 80%).
     """
-    steps = []
-    total_calls = 0
-    previous_response = None
-    chain_of_thought = []  # Collects CoT across all steps
+    print(f"[AuditLoop] Running Iterative Audit Loop over {len(dataset)} items...")
+    
+    # Track active questions through iterative turns
+    active_items = [{
+        "id": item["id"],
+        "question": item["question"],
+        "ground_truth_num": item["ground_truth_num"],
+        "history": [],
+        "completed": False,
+        "total_calls": 0
+    } for item in dataset]
 
-    for step_idx in range(MAX_STEPS):
-        is_proposer = step_idx == 0
-        role = "proposer" if is_proposer else ("auditor_B" if step_idx % 2 == 1 else "auditor_A")
+    engines = [engine_a, engine_b, engine_a, engine_b]
 
-        if is_proposer:
-            system_prompt = PROPOSER_SYSTEM
-            prompt = f"Problem:\n{question}\n\nSolve this step by step."
-        else:
-            system_prompt = AUDITOR_SYSTEM
-            prompt = (
-                f"Problem:\n{question}\n\n"
-                f"Proposed solution:\n{previous_response}\n\n"
-                f"Carefully audit every step of this solution. "
-                f"Check each calculation. If you find any errors, "
-                f"provide the full corrected solution with all steps shown."
-            )
-
-        # ── Main generation (greedy / deterministic) ─────────────
-        response = generate(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            temperature=TEMPERATURE_GREEDY,
-            seed=SEED_MAIN,
-        )
-        total_calls += 1
-        main_answer = extract_numerical_answer(response)
-
-        # ── Uncertainty estimation (5 stochastic samples) ────────
-        uncertainty = compute_uncertainty(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            k=UNCERTAINTY_SAMPLES,
-        )
-        total_calls += UNCERTAINTY_SAMPLES
-
-        # ── Build CoT trace for this step ────────────────────────
-        cot_entry = {
-            "step": step_idx,
-            "role": role,
-            "system_prompt": system_prompt,
-            "user_prompt": prompt,
-            "chain_of_thought": response,  # Full CoT response
-            "extracted_answer": main_answer,
-            "uncertainty_samples": [],
-        }
-
-        # Store CoT from each uncertainty sample too
-        if SAVE_COT:
-            for sample_idx, (sample_text, sample_answer) in enumerate(
-                zip(uncertainty["samples"], uncertainty["answers"])
-            ):
-                cot_entry["uncertainty_samples"].append({
-                    "sample_idx": sample_idx,
-                    "chain_of_thought": sample_text,
-                    "extracted_answer": sample_answer,
-                })
-
-        chain_of_thought.append(cot_entry)
-
-        # ── Step data (same as before, plus CoT) ─────────────────
-        step_data = {
-            "step": step_idx,
-            "role": role,
-            "response": response,
-            "answer": main_answer,
-            "uncertainty": {
-                "answers": uncertainty["answers"],
-                "majority_answer": uncertainty["majority_answer"],
-                "agreement": uncertainty["agreement"],
-                "agreement_count": uncertainty["agreement_count"],
-            },
-        }
-        steps.append(step_data)
-        previous_response = response
-
-        # ── Early stopping ───────────────────────────────────────
-        if uncertainty["agreement_count"] >= AGREEMENT_THRESHOLD:
+    for step in range(config.MAX_AUDIT_STEPS):
+        pending_indices = [i for i, item in enumerate(active_items) if not item["completed"]]
+        if not pending_indices:
+            print(f"[AuditLoop] All questions converged early at Step {step}.")
             break
+            
+        current_engine = engines[step]
+        auditor_label = "Model_A" if step % 2 == 0 else "Model_B"
+        
+        # Prepare prompts
+        prompts = [
+            build_prompt(active_items[i]["question"], active_items[i]["history"], step)
+            for i in pending_indices
+        ]
+        
+        # Batch generation (5 samples per question for uncertainty proxy)
+        batch_samples = current_engine.generate_samples(
+            prompts, 
+            num_samples=config.SAMPLES_PER_STEP, 
+            temperature=config.TEMPERATURE
+        )
+        
+        for idx, item_idx in enumerate(pending_indices):
+            item = active_items[item_idx]
+            samples = batch_samples[idx]
+            
+            # Extract numerical answers from 5 auditor samples
+            extracted_nums = [extract_numerical_answer(s) for s in samples]
+            maj_answer, agreement, uncertainty = calculate_uncertainty_proxy(extracted_nums)
+            
+            # Select sample matching majority answer as representative response
+            selected_response = samples[0]
+            for s, num in zip(samples, extracted_nums):
+                if num == maj_answer:
+                    selected_response = s
+                    break
+                    
+            item["total_calls"] += config.SAMPLES_PER_STEP
+            turn_record = {
+                "step": step + 1,
+                "auditor": auditor_label,
+                "samples": samples,
+                "extracted_nums": extracted_nums,
+                "majority_answer": maj_answer,
+                "agreement_ratio": agreement,
+                "uncertainty": uncertainty,
+                "response": selected_response,
+                "is_correct": (maj_answer == item["ground_truth_num"])
+            }
+            item["history"].append(turn_record)
+            
+            # Early stopping check: High agreement proxy
+            if agreement >= config.HIGH_AGREEMENT_THRESHOLD:
+                item["completed"] = True
 
-    last_step = steps[-1]
-    final_answer = last_step["uncertainty"]["majority_answer"] or last_step["answer"]
-
-    return {
-        "question": question,
-        "steps": steps,
-        "final_answer": final_answer,
-        "num_steps": len(steps),
-        "total_calls": total_calls,
-        "stopped_early": len(steps) < MAX_STEPS,
-        "chain_of_thought": chain_of_thought,  # Full CoT trace
-    }
+    return active_items
