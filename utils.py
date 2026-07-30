@@ -1,46 +1,71 @@
+"""
+Utility functions for answer extraction and comparison.
+"""
+
 import re
-from typing import List, Tuple, Dict, Any
-from collections import Counter
 
-def extract_numerical_answer(text: str) -> str:
+def extract_numerical_answer(text: str) -> str | None:
     """
-    Extracts the final numerical answer from a chain-of-thought response.
-    Handles '#### 123', 'The answer is 123', and raw numbers.
-    """
-    if "####" in text:
-        match = re.search(r"####\s*(-?\d[\d,]*\.?\d*)", text)
-        if match:
-            return match.group(1).replace(",", "").strip()
-            
-    # Look for explicitly stated answers
-    matches = re.findall(r"(?:answer is|equals|=)\s*\\?\$?\s*(-?\d[\d,]*\.?\d*)", text, re.IGNORECASE)
-    if matches:
-        return matches[-1].replace(",", "").strip()
-        
-    # Fallback to the last standalone number in the text
-    all_nums = re.findall(r"-?\d[\d,]*\.?\d*", text)
-    if all_nums:
-        return all_nums[-1].replace(",", "").strip()
-        
-    return ""
+    Extract the final numerical answer from model output.
 
-def calculate_uncertainty_proxy(extracted_answers: List[str]) -> Tuple[str, float, float]:
+    Handles formats like:
+        - "The answer is 42"
+        - "#### 42"
+        - "**42**"
+        - Just a number at the end
+        - Negative numbers and decimals
     """
-    Computes majority vote agreement over extracted numerical answers.
-    Returns:
-        - majority_answer (str)
-        - agreement_ratio (float): Agreement score in [0.0, 1.0]
-        - uncertainty_score (float): 1.0 - agreement_ratio
-    """
-    valid_answers = [ans for ans in extracted_answers if ans != ""]
-    if not valid_answers:
-        return "", 0.0, 1.0
-        
-    counts = Counter(valid_answers)
-    majority_answer, top_count = counts.most_common(1)[0]
-    total_samples = len(extracted_answers)
-    
-    agreement_ratio = top_count / total_samples
-    uncertainty_score = 1.0 - agreement_ratio
-    
-    return majority_answer, agreement_ratio, uncertainty_score
+    if not text:
+        return None
+
+    # Try "#### <number>" format first (GSM8K style)
+    match = re.search(r"####\s*([-\d,\.]+)", text)
+    if match:
+        return _clean_number(match.group(1))
+
+    # Try "the answer is <number>" pattern
+    match = re.search(
+        r"(?:the\s+)?(?:final\s+)?answer\s+is\s*:?\s*([-\d,\.]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        return _clean_number(match.group(1))
+
+    # Try "= <number>" at end of text
+    match = re.search(r"=\s*([-\d,\.]+)\s*$", text)
+    if match:
+        return _clean_number(match.group(1))
+
+    # Try bold number pattern **<number>**
+    match = re.search(r"\*\*([-\d,\.]+)\*\*", text)
+    if match:
+        return _clean_number(match.group(1))
+
+    # Last resort: find the last number in the text
+    numbers = re.findall(r"[-]?\d[\d,]*\.?\d*", text)
+    if numbers:
+        return _clean_number(numbers[-1])
+
+    return None
+
+def _clean_number(s: str) -> str:
+    """Remove commas and trailing dots from number strings."""
+    s = s.replace(",", "").strip(".")
+    # Normalize: remove trailing zeros after decimal
+    try:
+        val = float(s)
+        if val == int(val):
+            return str(int(val))
+        return str(val)
+    except ValueError:
+        return s
+
+def answers_match(predicted: str | None, gold: str) -> bool:
+    """Check if predicted answer matches the gold answer numerically."""
+    if predicted is None:
+        return False
+    try:
+        return abs(float(predicted) - float(gold)) < 1e-5
+    except (ValueError, TypeError):
+        return predicted.strip() == gold.strip()
