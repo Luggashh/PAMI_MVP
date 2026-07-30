@@ -1,25 +1,36 @@
-from vllm import LLM, SamplingParams
 from typing import List
 from config import config
 
+# Import your custom Ollama client here. 
+# (Adjust the import statement below to match the exact class/function inside your ollama_client.py)
+from ollama_client import generate_from_ollama 
+
 class ParallelAuditEngine:
     def __init__(self, model_name: str):
-        print(f"Initializing vLLM Engine: {model_name} on {config.TENSOR_PARALLEL_SIZE} GPUs...")
-        self.llm = LLM(
-            model=model_name,
-            tensor_parallel_size=config.TENSOR_PARALLEL_SIZE,
-            gpu_memory_utilization=config.GPU_MEMORY_UTILIZATION,
-            max_model_len=config.MAX_MODEL_LEN,
-            trust_remote_code=True,
-            enforce_eager=True # Helps prevent CUDA graph conflicts with dual engines
-        )
-        self.sampling_params = SamplingParams(
-            n=config.SAMPLES_PER_STEP,
-            temperature=config.TEMPERATURE,
-            max_tokens=1024,
-            stop=["<|endoftext|>", "<|im_end|>"]
-        )
+        print(f"[LLMEngine] Initializing Ollama Engine for model: {model_name}...")
+        self.model_name = model_name
 
     def generate_batch(self, prompts: List[str]) -> List[List[str]]:
-        outputs = self.llm.generate(prompts, self.sampling_params, use_tqdm=True)
-        return [[out.text for out in output.outputs] for output in outputs]
+        """
+        Since Ollama does not natively support vLLM's massive parallel batching out-of-the-box,
+        we iterate through the prompts and request samples via your Ollama client.
+        """
+        batch_results = []
+        
+        # Iterate over all prompts in the current batch
+        for prompt in prompts:
+            question_samples = []
+            
+            # Generate the requested number of samples (e.g., 5) per question
+            for _ in range(config.SAMPLES_PER_STEP):
+                # Replace 'generate_from_ollama' with the actual function from your ollama_client.py
+                response = generate_from_ollama(
+                    model=self.model_name,
+                    prompt=prompt,
+                    temperature=config.TEMPERATURE
+                )
+                question_samples.append(response)
+                
+            batch_results.append(question_samples)
+            
+        return batch_results
