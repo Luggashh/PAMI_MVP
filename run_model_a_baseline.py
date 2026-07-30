@@ -5,7 +5,7 @@ import os
 import re
 import time
 from typing import Dict, Any, List, Optional
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
 from ollama import AsyncClient, ResponseError
 
 # Configure Logging
@@ -13,8 +13,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- CONFIGURATION ---
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11435")
-MODEL_A = os.getenv("MODEL_A", "llama3")  # Replace with Model A name (e.g., llama3, qwen2.5)
-MAX_CONCURRENCY = 32  # Saturated queue for 4x A100 GPUs
+MODEL_A = os.getenv("MODEL_A", "llama3.2:3b")  # Model A name
+MAX_CONCURRENCY = 32  # Concurrency limit for 4x A100 GPUs
 RESULTS_DIR = "./results"
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -80,7 +80,7 @@ class ModelAEvaluator:
                     response = await self.client.chat(
                         model=self.model_name,
                         messages=prompt,
-                        options={"temperature": 0.0}  # Deterministic decoding for Model A baseline
+                        options={"temperature": 0.0}  # Deterministic decoding
                     )
                     return response['message']['content']
                 except ResponseError as e:
@@ -98,6 +98,7 @@ class ModelAEvaluator:
         """Processes a single GSM8K item."""
         question = item['question']
         raw_gold = item['answer']
+        split_origin = item.get('split', 'unknown')
         gold_num_str = extract_numerical_answer(raw_gold)
         gold_val = normalize_number(gold_num_str)
 
@@ -112,6 +113,7 @@ class ModelAEvaluator:
 
         return {
             "id": idx,
+            "split": split_origin,
             "question": question,
             "gold_raw": raw_gold,
             "gold_num": gold_num_str,
@@ -123,70 +125,87 @@ class ModelAEvaluator:
 
 # --- MAIN RUNNER ---
 async def main():
-    print(f"=== Starting GSM8K Benchmark for Model A ONLY ({MODEL_A}) ===")
+    print(f"=== Starting Combined GSM8K (Train + Test) Benchmark for Model A ({MODEL_A}) ===")
     print(f"Server Host: {OLLAMA_HOST}")
     print(f"Max Concurrent Requests: {MAX_CONCURRENCY}")
 
-    # Load GSM8K dataset (test split = 1,319 questions)
-    logging.info("Loading GSM8K test dataset...")
-    dataset = load_dataset("openai/gsm8k", "main", split="test")
-    total_questions = len(dataset)
-    logging.info(f"Loaded {total_questions} questions.")
+    # 1. Load both Train (7,473) and Test (1,319) splits
+    logging.info("Loading GSM8K train and test datasets...")
+    train_dataset = load_dataset("openai/gsm8k", "main", split="train")
+    test_dataset = load_dataset("openai/gsm8k", "main", split="test")
+
+    # Add split tag to metadata
+    train_dataset = train_dataset.add_column("split", ["train"] * len(train_dataset))
+    test_dataset = test_dataset.add_column("split", ["test"] * len(test_dataset))
+
+    # Combine into full 8,792 dataset
+    full_dataset = concatenate_datasets([train_dataset, test_dataset])
+    total_questions = len(full_dataset)
+    logging.info(f"Successfully combined splits: Total {total_questions} questions ({len(train_dataset)} train + {len(test_dataset)} test).")
 
     evaluator = ModelAEvaluator(host=OLLAMA_HOST, model_name=MODEL_A, max_concurrency=MAX_CONCURRENCY)
 
     start_time = time.time()
-    tasks = [evaluator.process_item(item, idx) for idx, item in enumerate(dataset)]
+    tasks = [evaluator.process_item(item, idx) for idx, item in enumerate(full_dataset)]
     
-    # Run all GSM8K evaluations concurrently
+    # Process all 8,792 tasks asynchronously
     results = await asyncio.gather(*tasks)
     total_duration = time.time() - start_time
 
-    # Calculate Metrics
+    # Calculate Overall Metrics
     correct_count = sum(1 for r in results if r['is_correct'])
     accuracy = (correct_count / total_questions) * 100
-    avg_latency = sum(r['latency_seconds'] for r in results) / total_questions
+
+    # Calculate Split-specific Metrics
+    train_results = [r for r in results if r['split'] == 'train']
+    test_results = [r for r in results if r['split'] == 'test']
+
+    train_correct = sum(1 for r in train_results if r['is_correct'])
+    test_correct = sum(1 for r in test_results if r['is_correct'])
 
     summary = {
         "model_name": MODEL_A,
-        "eval_type": "Model A Baseline Only (No Iterative Audit)",
-        "total_samples": total_questions,
-        "correct_samples": correct_count,
-        "accuracy_percentage": round(accuracy, 2),
-        "total_execution_time_seconds": round(total_duration, 2),
-        "avg_sample_latency_seconds": round(avg_latency, 3),
-        "throughput_samples_per_sec": round(total_questions / total_duration, 2)
+        "eval_type": "Model A Standalone (Full Train + Test GSM8K)",
+        "overall": {
+            "total_samples": total_questions,
+            "correct_samples": correct_count,
+            "accuracy_percentage": round(accuracy, 2)
+        },
+        "train_split": {
+            "total_samples": len(train_results),
+            "correct_samples": train_correct,
+            "accuracy_percentage": round((train_correct / len(train_results)) * 100, 2)
+        },
+        "test_split": {
+            "total_samples": len(test_results),
+            "correct_samples": test_correct,
+            "accuracy_percentage": round((test_correct / len(test_results)) * 100, 2)
+        },
+        "performance": {
+            "total_execution_time_seconds": round(total_duration, 2),
+            "avg_sample_latency_seconds": round(sum(r['latency_seconds'] for r in results) / total_questions, 3),
+            "throughput_samples_per_sec": round(total_questions / total_duration, 2)
+        }
     }
 
-    # Save Detailed Results JSON
-    results_file = os.path.join(RESULTS_DIR, "model_a_full_results.json")
+    # Save Results
+    results_file = os.path.join(RESULTS_DIR, "model_a_full_gsm8k_results.json")
     with open(results_file, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
-    # Save Summary JSON
-    summary_file = os.path.join(RESULTS_DIR, "model_a_summary.json")
+    summary_file = os.path.join(RESULTS_DIR, "model_a_full_gsm8k_summary.json")
     with open(summary_file, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
-    # Save CoT Traces
-    traces_file = os.path.join(RESULTS_DIR, "model_a_cot_traces.md")
-    with open(traces_file, "w", encoding="utf-8") as f:
-        f.write(f"# Model A Standalone Reasoning Traces ({MODEL_A})\n\n")
-        for r in results[:50]:  # Save first 50 detailed traces to markdown for inspection
-            f.write(f"### Question {r['id'] + 1}\n")
-            f.write(f"**Question:** {r['question']}\n\n")
-            f.write(f"**Model A CoT Response:**\n{r['model_a_cot']}\n\n")
-            f.write(f"**Predicted Num:** `{r['model_a_pred_num']}` | **Gold Num:** `{r['gold_num']}` | **Correct:** `{r['is_correct']}`\n\n")
-            f.write("---\n\n")
-
-    print("\n" + "="*50)
-    print("=== MODEL A BASELINE EVALUATION COMPLETE ===")
-    print("="*50)
-    print(f"Accuracy: {accuracy:.2f}% ({correct_count}/{total_questions})")
-    print(f"Total Time: {total_duration:.2f}s ({total_questions / total_duration:.2f} samples/sec)")
-    print(f"Full results saved to: {results_file}")
-    print(f"Summary saved to:      {summary_file}")
-    print(f"Traces saved to:       {traces_file}")
+    print("\n" + "="*60)
+    print("=== FULL GSM8K (8,792 SAMPLES) EVALUATION COMPLETE ===")
+    print("="*60)
+    print(f"Overall Accuracy: {accuracy:.2f}% ({correct_count}/{total_questions})")
+    print(f"Train Split Acc:  {summary['train_split']['accuracy_percentage']}% ({train_correct}/{len(train_results)})")
+    print(f"Test Split Acc:   {summary['test_split']['accuracy_percentage']}% ({test_correct}/{len(test_results)})")
+    print(f"Total Time:       {total_duration:.2f}s ({total_questions / total_duration:.2f} samples/sec)")
+    print(f"Results saved to: {results_file}")
+    print(f"Summary saved to: {summary_file}")
 
 if __name__ == "__main__":
     asyncio.run(main())
