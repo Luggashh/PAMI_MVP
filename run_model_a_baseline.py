@@ -129,7 +129,7 @@ async def main():
 
     # Load GSM8K dataset (test split = 1,319 questions)
     logging.info("Loading GSM8K test dataset...")
-    dataset = load_dataset("openai/gsm8k", "main", split="test")
+    dataset = load_dataset("gsm8k", "main", split="test")
     total_questions = len(dataset)
     logging.info(f"Loaded {total_questions} questions.")
 
