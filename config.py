@@ -1,30 +1,26 @@
-import os
-from pydantic import BaseModel
+"""
+Configuration for the Iterative Audit Loop pipeline.
+"""
 
-class AuditConfig(BaseModel):
-    # Models
-    MODEL_A_NAME: str = "llama3.2:3b"
-    MODEL_B_NAME: str = "llama3.2:3b"
-    
-    # GSM8K Dataset Settings
-    DATASET_NAME: str = "gsm8k"
-    DATASET_CONFIG: str = "main"
-    USE_FULL_DATASET: bool = True  # Combine train + test splits (100%)
-    
-    # Audit Loop Settings
-    MAX_AUDIT_STEPS: int = 4       # Max 4 turns (A -> B -> A -> B)
-    SAMPLES_PER_STEP: int = 5      # 5 samples per auditor step
-    TEMPERATURE: float = 0.7       # Sampling temperature for uncertainty estimation
-    HIGH_AGREEMENT_THRESHOLD: float = 0.8  # Stop early if agreement >= 80% (4/5)
-    
-    # Hardware & VLLM Optimization for 4x A100-40GB
-    TENSOR_PARALLEL_SIZE: int = 4   # Distribute across 4 GPUs
-    GPU_MEMORY_UTILIZATION: float = 0.90
-    MAX_MODEL_LEN: int = 4096
-    BATCH_SIZE: int = 512
-    
-    # Output Directory
-    OUTPUT_DIR: str = "./results"
+# ── Ollama Settings ──────────────────────────────────────────────
+OLLAMA_BASE_URL = "http://localhost:11434"
+MODEL_NAME = "llama3.2:3b"
 
-config = AuditConfig()
-os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+# ── Generation Parameters ────────────────────────────────────────
+TEMPERATURE = 0.7
+TEMPERATURE_GREEDY = 0.0
+MAX_TOKENS = 1024           # ← Increased to allow full CoT responses
+SEED_MAIN = 42
+
+# ── Audit Loop Settings ─────────────────────────────────────────
+MAX_STEPS = 4
+UNCERTAINTY_SAMPLES = 5
+AGREEMENT_THRESHOLD = 4
+
+# ── Dataset Settings ─────────────────────────────────────────────
+GSM8K_SPLIT = "test"
+NUM_EXAMPLES = 50
+
+# ── Output ───────────────────────────────────────────────────────
+OUTPUT_DIR = "results"
+SAVE_COT = True              # ← Save full chain-of-thought traces
