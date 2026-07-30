@@ -3,21 +3,14 @@ from typing import List, Dict, Any
 from config import config
 
 def load_full_gsm8k() -> List[Dict[str, Any]]:
-    """
-    Loads 100% of the GSM8K dataset by concatenating both 'train' and 'test' splits,
-    removing any partition between train/test data.
-    """
-    print(f"[DataLoader] Loading GSM8K dataset ({config.DATASET_NAME})...")
+    """Loads 100% of the GSM8K dataset (train + test combined)."""
+    print(f"Loading FULL GSM8K dataset...")
     dataset = load_dataset(config.DATASET_NAME, config.DATASET_CONFIG)
     
     combined_data = []
     
-    if config.USE_FULL_DATASET:
-        splits = ['train', 'test']
-    else:
-        splits = ['test']
-        
-    for split in splits:
+    # Merge train and test with no partition
+    for split in ['train', 'test']:
         for idx, item in enumerate(dataset[split]):
             combined_data.append({
                 "id": f"{split}_{idx}",
@@ -26,12 +19,10 @@ def load_full_gsm8k() -> List[Dict[str, Any]]:
                 "ground_truth_num": extract_gsm8k_ground_truth(item["answer"])
             })
             
-    print(f"[DataLoader] Successfully loaded total of {len(combined_data)} questions (100% unpartitioned).")
+    print(f"Loaded {len(combined_data)} total questions.")
     return combined_data
 
 def extract_gsm8k_ground_truth(answer_str: str) -> str:
-    """Extracts the final numerical value following #### in GSM8K answers."""
     if "####" in answer_str:
-        num = answer_str.split("####")[-1].strip().replace(",", "")
-        return num
+        return answer_str.split("####")[-1].strip().replace(",", "")
     return ""
