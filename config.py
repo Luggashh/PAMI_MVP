@@ -23,14 +23,24 @@ MAX_STEPS = 4
 UNCERTAINTY_SAMPLES = 5
 AGREEMENT_THRESHOLD = 4
 
+<<<<<<< HEAD
 # ── Dataset Settings ─────────────────────────────────────────
 GSM8K_SPLIT = "train"
 NUM_EXAMPLES = None          # None = full train set (7473 examples)
+=======
+# ── Dataset Settings ─────────────────────────────────────────────
+GSM8K_SPLIT = "test"
+NUM_EXAMPLES = None
+>>>>>>> 9b8a569edecf83ba981446a18e7410d2943b6ecb
 
 # ── Output ───────────────────────────────────────────────────
 OUTPUT_DIR = "results"
+<<<<<<< HEAD
 SAVE_COT = True
 
 # ── Concurrency ──────────────────────────────────────────────
 MAX_WORKERS = 64             # Tuned for 4× A100s with vLLM batching
 
+=======
+SAVE_COT = True              # ← Save full chain-of-thought traces
+>>>>>>> 9b8a569edecf83ba981446a18e7410d2943b6ecb
