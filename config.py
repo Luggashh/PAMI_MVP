@@ -19,7 +19,7 @@ AGREEMENT_THRESHOLD = 4
 
 # ── Dataset Settings ─────────────────────────────────────────────
 GSM8K_SPLIT = "test"
-NUM_EXAMPLES = 50
+NUM_EXAMPLES = None
 
 # ── Output ───────────────────────────────────────────────────────
 OUTPUT_DIR = "results"
