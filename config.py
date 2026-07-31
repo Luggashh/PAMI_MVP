@@ -1,16 +1,7 @@
-
-
-
-# ── vLLM / OpenAI-compatible Settings ────────────────────────
-# vLLM serves an OpenAI-compatible API on this base URL.
-# We run 4 vLLM instances (one per GPU) behind a simple round-robin.
-VLLM_BASE_URLS = [
-    "http://localhost:8000",
-    "http://localhost:8001",
-    "http://localhost:8002",
-    "http://localhost:8003",
-]
-MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
+# ── Ollama Port & URL Configuration ──────────────────────────
+OLLAMA_BASE_URL = "http://localhost:11434"
+VLLM_BASE_URLS = ["http://localhost:11434/v1"]
+MODEL_NAME = "llama3.2"
 
 # ── Generation Parameters ────────────────────────────────────
 TEMPERATURE = 0.7
@@ -23,24 +14,13 @@ MAX_STEPS = 4
 UNCERTAINTY_SAMPLES = 5
 AGREEMENT_THRESHOLD = 4
 
-<<<<<<< HEAD
 # ── Dataset Settings ─────────────────────────────────────────
-GSM8K_SPLIT = "train"
-NUM_EXAMPLES = None          # None = full train set (7473 examples)
-=======
-# ── Dataset Settings ─────────────────────────────────────────────
 GSM8K_SPLIT = "test"
 NUM_EXAMPLES = None
->>>>>>> 9b8a569edecf83ba981446a18e7410d2943b6ecb
 
 # ── Output ───────────────────────────────────────────────────
 OUTPUT_DIR = "results"
-<<<<<<< HEAD
 SAVE_COT = True
 
 # ── Concurrency ──────────────────────────────────────────────
-MAX_WORKERS = 64             # Tuned for 4× A100s with vLLM batching
-
-=======
-SAVE_COT = True              # ← Save full chain-of-thought traces
->>>>>>> 9b8a569edecf83ba981446a18e7410d2943b6ecb
+MAX_WORKERS = 32
