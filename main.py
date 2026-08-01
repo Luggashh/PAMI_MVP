@@ -6,12 +6,12 @@ Usage:
     python main.py --num_examples 50 --output_dir results/
 
 This runs the full pipeline:
-    1. Spin up 4 background vLLM instances (one per GPU)
+    1. Spin up 4 background vLLM instances (one per GPU) with HF Token authentication
     2. Load GSM8K test examples
     3. For each example, run the iterative audit loop (Model A → B → A → B)
     4. At each step, sample 5 times for majority-vote uncertainty
     5. Evaluate and report results
-    6. Clean up background server processes
+    6. Clean up background server processes and close file handles
 """
 
 import argparse
@@ -29,8 +29,9 @@ from ollama_client import check_ollama_ready
 from audit_loop import run_audit_loop
 from evaluation import evaluate_results
 
-# Liste, um die Hintergrundprozesse der Server zu tracken
+# Listen, um die Hintergrundprozesse und offenen Log-Dateien der Server zu tracken
 vllm_processes = []
+vllm_log_files = []
 
 def start_vllm_servers():
     """Startet 4 vLLM-Instanzen im Hintergrund auf den GPUs 0 bis 3."""
@@ -47,32 +48,46 @@ def start_vllm_servers():
             "--model", model_name
         ]
         
-        # Umgebungsvariablen kopieren und CUDA_VISIBLE_DEVICES setzen
+        # Umgebungsvariablen kopieren und modifizieren
         env = dict(subprocess.os.environ)
+
+        # Injektiert den Hugging Face Token direkt in dieses Dictionary
+        env["HF_TOKEN"] = "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"
+
+        # Injektiert die jeweilige GPU-ID (0, 1, 2 oder 3)
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
-        
-        # Prozess asynchron im Hintergrund starten
+
+        # DEFINITION: Öffnet die Log-Datei im Schreibmodus für den aktuellen Port
+        log_file = open(f"vllm_port_{port}.log", "w")
+        vllm_log_files.append(log_file)
+
+        # Prozess asynchron im Hintergrund starten und Logs umleiten
         proc = subprocess.Popen(
             cmd, 
-            env=env, 
-            stdout=subprocess.DEVNULL, # Verhindert, dass Server-Logs den Output überfluten
-            stderr=subprocess.DEVNULL
+            env=env,
+            stdout=log_file,
+            stderr=log_file
         )
         vllm_processes.append(proc)
-        print(f"   -> vLLM on GPU {gpu} (Port {port}) is spinning up...")
+        print(f"   -> vLLM on GPU {gpu} (Port {port}) is spinning up... (Logs: vllm_port_{port}.log)")
 
-    # Den Servern Zeit geben, das Modell in den GPU-Speicher zu laden
-    print("⏳ Waiting 45 seconds for models to load into GPU memory...")
-    time.sleep(45)
+    # Den Servern genügend Zeit geben, das Modell (inkl. Download) zu laden
+    print("⏳ Waiting 120 seconds for models to completely load into GPU memory...")
+    time.sleep(120)
 
 def cleanup_vllm_servers():
-    """Schließt alle Hintergrund-Server, wenn das Skript beendet wird."""
+    """Schließt alle Hintergrund-Server und Dateihandles, wenn das Skript beendet wird."""
     if vllm_processes:
         print("\n🛑 Terminating vLLM background instances...")
         for proc in vllm_processes:
             proc.terminate()
             proc.wait()
         print("✅ All background server processes successfully terminated.")
+    
+    # Offene Log-Dateien sauber schließen
+    if vllm_log_files:
+        for f in vllm_log_files:
+            f.close()
 
 # Registriert den Cleanup-Mechanismus für ein sauberes Beenden bei Skriptende/Abbruch
 atexit.register(cleanup_vllm_servers)
