@@ -20,6 +20,7 @@ import sys
 import time
 import subprocess
 import atexit
+import os
 
 from tqdm import tqdm
 
@@ -40,6 +41,12 @@ def start_vllm_servers():
     ports_and_gpus = [(8000, 0), (8001, 1), (8002, 2), (8003, 3)]
     model_name = "meta-llama/Llama-3.2-3B-Instruct"
 
+    # Liest den Token sicher aus der Umgebung des Betriebssystems
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        print("❌ Error: HF_TOKEN environment variable is not set.")
+        sys.exit(1)
+
     for port, gpu in ports_and_gpus:
         # Konstruktion des CLI-Befehls
         cmd = [
@@ -51,8 +58,8 @@ def start_vllm_servers():
         # Umgebungsvariablen kopieren und modifizieren
         env = dict(subprocess.os.environ)
 
-        # Injektiert den Hugging Face Token direkt in dieses Dictionary
-        env["HF_TOKEN"] = "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"
+        # Injektiert den ausgelesenen Token sicher in dieses Dictionary
+        env["HF_TOKEN"] = hf_token
 
         # Injektiert die jeweilige GPU-ID (0, 1, 2 oder 3)
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
