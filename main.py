@@ -6,16 +6,20 @@ Usage:
     python main.py --num_examples 50 --output_dir results/
 
 This runs the full pipeline:
-    1. Load GSM8K test examples
-    2. For each example, run the iterative audit loop (Model A → B → A → B)
-    3. At each step, sample 5 times for majority-vote uncertainty
-    4. Evaluate and report results
+    1. Spin up 4 background vLLM instances (one per GPU)
+    2. Load GSM8K test examples
+    3. For each example, run the iterative audit loop (Model A → B → A → B)
+    4. At each step, sample 5 times for majority-vote uncertainty
+    5. Evaluate and report results
+    6. Clean up background server processes
 """
 
 import argparse
 import json
 import sys
 import time
+import subprocess
+import atexit
 
 from tqdm import tqdm
 
@@ -24,6 +28,54 @@ from data_loader import load_gsm8k
 from ollama_client import check_ollama_ready
 from audit_loop import run_audit_loop
 from evaluation import evaluate_results
+
+# Liste, um die Hintergrundprozesse der Server zu tracken
+vllm_processes = []
+
+def start_vllm_servers():
+    """Startet 4 vLLM-Instanzen im Hintergrund auf den GPUs 0 bis 3."""
+    print("🚀 Starting 4 vLLM instances in background (4x A100 GPUs)...")
+    
+    ports_and_gpus = [(8000, 0), (8001, 1), (8002, 2), (8003, 3)]
+    model_name = "meta-llama/Llama-3.2-3B-Instruct"
+
+    for port, gpu in ports_and_gpus:
+        # Konstruktion des CLI-Befehls
+        cmd = [
+            sys.executable, "-m", "vllm.entrypoints.openai.api_server",
+            "--port", str(port),
+            "--model", model_name
+        ]
+        
+        # Umgebungsvariablen kopieren und CUDA_VISIBLE_DEVICES setzen
+        env = dict(subprocess.os.environ)
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+        
+        # Prozess asynchron im Hintergrund starten
+        proc = subprocess.Popen(
+            cmd, 
+            env=env, 
+            stdout=subprocess.DEVNULL, # Verhindert, dass Server-Logs den Output überfluten
+            stderr=subprocess.DEVNULL
+        )
+        vllm_processes.append(proc)
+        print(f"   -> vLLM on GPU {gpu} (Port {port}) is spinning up...")
+
+    # Den Servern Zeit geben, das Modell in den GPU-Speicher zu laden
+    print("⏳ Waiting 45 seconds for models to load into GPU memory...")
+    time.sleep(45)
+
+def cleanup_vllm_servers():
+    """Schließt alle Hintergrund-Server, wenn das Skript beendet wird."""
+    if vllm_processes:
+        print("\n🛑 Terminating vLLM background instances...")
+        for proc in vllm_processes:
+            proc.terminate()
+            proc.wait()
+        print("✅ All background server processes successfully terminated.")
+
+# Registriert den Cleanup-Mechanismus für ein sauberes Beenden bei Skriptende/Abbruch
+atexit.register(cleanup_vllm_servers)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -49,12 +101,15 @@ def main():
     )
     args = parser.parse_args()
 
+    # ── Start background servers ──────────────────────────────────
+    start_vllm_servers()
+
     # ── Preflight checks ─────────────────────────────────────────
-    print("🔍 Checking Ollama availability...")
+    print("🔍 Checking vLLM cluster availability...")
     if not check_ollama_ready():
-        print("❌ Ollama is not ready. Please start it and pull the model.")
+        print("❌ vLLM cluster is not ready. Shutting down.")
         sys.exit(1)
-    print("✅ Ollama is ready.\n")
+    print("✅ vLLM cluster is ready.\n")
 
     # ── Load data ─────────────────────────────────────────────────
     print(f"📚 Loading GSM8K ({args.split}) — {args.num_examples} examples...")
