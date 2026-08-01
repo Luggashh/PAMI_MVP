@@ -23,44 +23,45 @@ from config import (
 
 # ── System Prompts with explicit CoT instructions ────────────────
 
-PROPOSER_SYSTEM = """You are a math problem solver. Solve the given math word problem using a clear chain of thought.
+PROPOSER_SYSTEM = """You are an expert mathematician. Solve the given math word problem by thinking step-by-step.
 
-You MUST follow this format:
+You MUST wrap your response exactly in these XML tags:
 
-## Reasoning
-Step 1: [Identify what is given and what is asked]
-Step 2: [Set up the approach]
-Step 3: [Perform calculations]
-... (as many steps as needed)
+<reasoning>
+Step 1: [Identify facts and requirements]
+Step 2: [Break down the arithmetic steps]
+...
+</reasoning>
 
-## Verification
-[Double-check your key calculations]
+<verification>
+[Double-check your calculations here]
+</verification>
 
-## Final Answer
-The answer is <number>"""
+<final_answer>[Insert only the final numerical value here]</final_answer>
 
-AUDITOR_SYSTEM = """You are a math auditor. You will be given a math word problem and a proposed solution. Audit it using a clear chain of thought.
+Do not put any text or explanations outside of these tags. Provide only the final number inside <final_answer>."""
 
-You MUST follow this format:
+AUDITOR_SYSTEM = """You are a critical math auditor. Your task is to verify if the proposed solution to the math problem is correct. Do not blindly trust it. Check every calculation.
 
-## Audit of Proposed Solution
-Step 1: [Check the first claim/calculation in the proposed solution]
-Step 2: [Check the next claim/calculation]
-... (check each step)
+You MUST wrap your response exactly in these XML tags:
 
-## Errors Found
-[List any errors, or state "No errors found"]
+<audit>
+Step 1: [Verify the first step of the proposed solution]
+Step 2: [Verify the next step]
+...
+</audit>
 
-## Corrected Reasoning (if errors were found)
-Step 1: [Your corrected calculation]
-Step 2: [Continue...]
-... 
+<errors>
+[List any arithmetic or logical errors found, or write "None"]
+</errors>
 
-## Verification
-[Double-check your corrected answer]
+<corrected_reasoning>
+[If errors were found, provide the full step-by-step correct calculation here. Otherwise, repeat the correct steps.]
+</corrected_reasoning>
 
-## Final Answer
-The answer is <number>"""
+<final_answer>[Insert only the final verified numerical value here]</final_answer>
+
+Do not put any text or explanations outside of these tags. Provide only the final number inside <final_answer>."""
 
 def run_audit_loop(question: str) -> dict:
     """
@@ -86,15 +87,14 @@ def run_audit_loop(question: str) -> dict:
 
         if is_proposer:
             system_prompt = PROPOSER_SYSTEM
-            prompt = f"Problem:\n{question}\n\nSolve this step by step."
+            prompt = f"Problem:\n{question}\n\nSolve this step by step using the XML format."
         else:
             system_prompt = AUDITOR_SYSTEM
             prompt = (
                 f"Problem:\n{question}\n\n"
-                f"Proposed solution:\n{previous_response}\n\n"
-                f"Carefully audit every step of this solution. "
-                f"Check each calculation. If you find any errors, "
-                f"provide the full corrected solution with all steps shown."
+                f"Proposed solution to audit:\n{previous_response}\n\n"
+                f"Carefully audit every step of this solution. Check each calculation for errors. "
+                f"Output your analysis and the correct final number using the XML format."
             )
 
         # ── Main generation (greedy / deterministic) ─────────────

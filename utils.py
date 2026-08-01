@@ -9,6 +9,7 @@ def extract_numerical_answer(text: str) -> str | None:
     Extract the final numerical answer from model output.
 
     Handles formats like:
+        - "<final_answer>42</final_answer>"
         - "The answer is 42"
         - "#### 42"
         - "**42**"
@@ -18,12 +19,21 @@ def extract_numerical_answer(text: str) -> str | None:
     if not text:
         return None
 
-    # Try "#### <number>" format first (GSM8K style)
+    # 1. Höchste Priorität: Das neue XML-Tag <final_answer>...</final_answer>
+    xml_match = re.search(r"<final_answer>(.*?)</final_answer>", text, re.DOTALL)
+    if xml_match:
+        tag_content = xml_match.group(1).strip()
+        # Falls das Modell Text/Einheiten in das Tag schreibt, extrahiere die Zahl daraus
+        num_match = re.search(r"([-\d,\.]+)", tag_content)
+        if num_match:
+            return _clean_number(num_match.group(1))
+
+    # 2. Try "#### <number>" format (GSM8K style)
     match = re.search(r"####\s*([-\d,\.]+)", text)
     if match:
         return _clean_number(match.group(1))
 
-    # Try "the answer is <number>" pattern
+    # 3. Try "the answer is <number>" pattern
     match = re.search(
         r"(?:the\s+)?(?:final\s+)?answer\s+is\s*:?\s*([-\d,\.]+)",
         text,
@@ -32,12 +42,12 @@ def extract_numerical_answer(text: str) -> str | None:
     if match:
         return _clean_number(match.group(1))
 
-    # Try "= <number>" at end of text
+    # 4. Try "= <number>" at end of text
     match = re.search(r"=\s*([-\d,\.]+)\s*$", text)
     if match:
         return _clean_number(match.group(1))
 
-    # Try bold number pattern **<number>**
+    # 5. Try bold number pattern **<number>**
     match = re.search(r"\*\*([-\d,\.]+)\*\*", text)
     if match:
         return _clean_number(match.group(1))
