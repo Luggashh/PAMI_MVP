@@ -78,9 +78,34 @@ def start_vllm_servers():
         vllm_processes.append(proc)
         print(f"   -> vLLM on GPU {gpu} (Port {port}) is spinning up... (Logs: vllm_port_{port}.log)")
 
-    # Den Servern genügend Zeit geben, das Modell (inkl. Download) zu laden
-    print("⏳ Waiting 120 seconds for models to completely load into GPU memory...")
-    time.sleep(120)
+    # INTELLIGENTES WARTEN: Dynamische Prüfung statt starrer Sleep-Zeit
+    print("⏳ Waiting for vLLM cluster to become available (polling via check_ollama_ready)...")
+    cluster_ready = False
+    max_attempts = 30  # 30 Versuche * 10 Sekunden = 5 Minuten maximale Wartezeit
+    
+    for attempt in range(1, max_attempts + 1):
+        time.sleep(10)
+        
+        # Vorab-Check: Ist einer der Prozesse im Hintergrund bereits unerwartet gecrasht?
+        for i, proc in enumerate(vllm_processes):
+            poll_code = proc.poll()
+            if poll_code is not None:
+                port_failed = ports_and_gpus[i][0]
+                print(f"❌ Error: vLLM process on port {port_failed} terminated early with code {poll_code}.")
+                print(f"👉 Please check the log file: vllm_port_{port_failed}.log")
+                sys.exit(1)
+                
+        # Verfügbarkeit des API-Clusters prüfen
+        if check_ollama_ready():
+            cluster_ready = True
+            print(f"✅ vLLM cluster is ready after {attempt * 10} seconds.")
+            break
+        else:
+            print(f"   ... still waiting for cluster to spin up ({attempt}/{max_attempts}) ...")
+
+    if not cluster_ready:
+        print("❌ Error: vLLM cluster failed to stabilize within 5 minutes. Shutting down.")
+        sys.exit(1)
 
 def cleanup_vllm_servers():
     """Schließt alle Hintergrund-Server und Dateihandles, wenn das Skript beendet wird."""
@@ -127,11 +152,13 @@ def main():
     start_vllm_servers()
 
     # ── Preflight checks ─────────────────────────────────────────
-    print("🔍 Checking vLLM cluster availability...")
+    # Da die Bereitschaft bereits in start_vllm_servers() garantiert wurde,
+    # dient dies als finale Bestätigung vor dem Pipeline-Start.
+    print("🔍 Finalizing vLLM cluster verification...")
     if not check_ollama_ready():
         print("❌ vLLM cluster is not ready. Shutting down.")
         sys.exit(1)
-    print("✅ vLLM cluster is ready.\n")
+    print("✅ vLLM cluster confirmation successful.\n")
 
     # ── Load data ─────────────────────────────────────────────────
     print(f"📚 Loading GSM8K ({args.split}) — {args.num_examples} examples...")
