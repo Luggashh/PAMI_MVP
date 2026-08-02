@@ -1,58 +1,30 @@
-"""
-Thin wrapper around the local Ollama REST API.
-Handles both deterministic (greedy) and stochastic (sampling) generation.
-"""
-
 import requests
-import json
-from config import OLLAMA_BASE_URL, MODEL_NAME, MAX_TOKENS
+import time
 
-def generate(
-    prompt: str,
-    system_prompt: str = "",
-    temperature: float = 0.0,
-    seed: int | None = None,
-    model: str = MODEL_NAME,
-) -> str:
-    """
-    Send a generation request to the local user-space Ollama server.
-    """
-    # Nutzt den standardmäßigen Ollama-Endpunkt für Textgenerierung
-    url = f"{OLLAMA_BASE_URL}/api/generate"
-
+def generate(prompt, system_prompt=None, seed=42, timeout=240):
+    url = "http://localhost:11434/api/generate" # oder OLLAMA_BASE_URL nutzen
     payload = {
-        "model": model,
+        "model": "llama3.2:3b",
         "prompt": prompt,
-        "system": system_prompt,
         "stream": False,
         "options": {
-            "temperature": temperature,
-            "num_predict": MAX_TOKENS,
-        },
+            "seed": seed,
+            "temperature": 0.7
+        }
     }
+    if system_prompt:
+        payload["system"] = system_prompt
 
-    if seed is not None:
-        payload["options"]["seed"] = seed
-
-    try:
-        response = requests.post(url, json=payload, timeout=120)
-        response.raise_for_status()
-        return response.json().get("response", "").strip()
-    except requests.exceptions.ConnectionError:
-        raise ConnectionError(
-            f"Verbindung zu Ollama unter {OLLAMA_BASE_URL} fehlgeschlagen. Läuft der Server?"
-        )
-    except requests.exceptions.Timeout:
-        raise TimeoutError("Ollama-Anfrage lief in ein Timeout nach 120s.")
-
-def check_ollama_ready() -> bool:
-    """Überprüft, ob der lokale Ollama-Server läuft und das Modell geladen ist."""
-    try:
-        resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
-        resp.raise_for_status()
-        models = [m["name"] for m in resp.json().get("models", [])]
-        
-        # Prüft, ob das in config.py eingetragene Modell (llama3.2:3b) vorhanden ist
-        return any(MODEL_NAME in m for m in models)
-    except Exception:
-        return False
+    # Bis zu 3 Wiederholungsversuche bei einem Timeout einplanen
+    for attempt in range(3):
+        try:
+            response = requests.post(url, json=payload, timeout=timeout)
+            response.raise_for_status()
+            return response.json().get("response", "")
+        except (requests.exceptions.RequestException, Exception) as e:
+            if attempt < 2:
+                wartezeit = 5 * (attempt + 1)
+                print(f"\n[⚠️ Timeout/Fehler] Versuch {attempt+1} fehlgeschlagen: {e}. Warte {warzeit}s...")
+                time.sleep(wartezeit)
+            else:
+                raise TimeoutError(f"Ollama-Anfrage permanent fehlgeschlagen nach 3 Versuchen. Letzter Fehler: {e}")
