@@ -1,5 +1,3 @@
-
-
 # ── vLLM / OpenAI-compatible Settings ────────────────────────
 # vLLM serves an OpenAI-compatible API on this base URL.
 # We run 4 vLLM instances (one per GPU) behind a simple round-robin.
@@ -13,12 +11,8 @@ VLLM_BASE_URLS = [
 # Workaround für Ihren ollama_client.py Import-Fehler:
 OLLAMA_BASE_URL = VLLM_BASE_URLS[0] 
 
-# KORREKTUR: Offizieller Hugging-Face-Name für das Llama 3.2 3B Instruct Modell
-MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
-
-# ── Generation Parameters ────────────────────────────────────
-...
-
+# UMSTELLUNG: Lokaler Absoluter Pfad zu den Modellgewichten (Keine HF-Abhängigkeit mehr)
+MODEL_NAME = "/home/project5_pami/models/Llama-3.2-3B-Instruct"
 
 # ── Generation Parameters ────────────────────────────────────
 TEMPERATURE = 0.7
@@ -41,4 +35,3 @@ SAVE_COT = True
 
 # ── Concurrency ──────────────────────────────────────────────
 MAX_WORKERS = 64             # Tuned for 4× A100s with vLLM batching
-

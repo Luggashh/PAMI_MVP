@@ -6,7 +6,7 @@ Usage:
     python main.py --num_examples 50 --output_dir results/
 
 This runs the full pipeline:
-    1. Spin up 4 background vLLM instances (one per GPU) with HF Token authentication
+    1. Spin up 4 background vLLM instances (one per GPU) using LOCAL model weights (Fully Offline)
     2. Load GSM8K test examples
     3. For each example, run the iterative audit loop (Model A → B → A → B)
     4. At each step, sample 5 times for majority-vote uncertainty
@@ -20,7 +20,6 @@ import sys
 import time
 import subprocess
 import atexit
-import os
 
 from tqdm import tqdm
 
@@ -35,40 +34,34 @@ vllm_processes = []
 vllm_log_files = []
 
 def start_vllm_servers():
-    """Startet 4 vLLM-Instanzen im Hintergrund auf den GPUs 0 bis 3."""
-    print("🚀 Starting 4 vLLM instances in background (4x A100 GPUs)...")
+    """Startet 4 vLLM-Instanzen im Hintergrund unter Verwendung des lokalen Modell-Pfads."""
+    print("🚀 Starting 4 vLLM instances in background (4x A100 GPUs Offline)...")
     
     ports_and_gpus = [(8000, 0), (8001, 1), (8002, 2), (8003, 3)]
-    model_name = "meta-llama/Llama-3.2-3B-Instruct"
-
-    # Liest den Token sicher aus der Umgebung des Betriebssystems
-    hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token:
-        print("❌ Error: HF_TOKEN environment variable is not set.")
-        sys.exit(1)
+    
+    # Importiert den Pfad direkt aus Ihrer config.py (zeigt nun auf das lokale Verzeichnis)
+    from config import MODEL_NAME 
 
     for port, gpu in ports_and_gpus:
-        # Konstruktion des CLI-Befehls
         cmd = [
             sys.executable, "-m", "vllm.entrypoints.openai.api_server",
             "--port", str(port),
-            "--model", model_name
+            "--model", MODEL_NAME  # Nutzt den lokalen Pfad
         ]
         
-        # Umgebungsvariablen kopieren und modifizieren
         env = dict(subprocess.os.environ)
 
-        # Injektiert den ausgelesenen Token sicher in dieses Dictionary
-        env["HF_TOKEN"] = hf_token
+        # ZWINGT vLLM und Hugging Face Bibliotheken im lokalen Netzwerk / Offline zu bleiben
+        env["HF_HUB_OFFLINE"] = "1"
+        env["HF_DATASETS_OFFLINE"] = "1"
+        env["TRANSFORMERS_OFFLINE"] = "1"
 
-        # Injektiert die jeweilige GPU-ID (0, 1, 2 oder 3)
+        # Injektiert die jeweilige GPU-ID
         env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
-        # DEFINITION: Öffnet die Log-Datei im Schreibmodus für den aktuellen Port
         log_file = open(f"vllm_port_{port}.log", "w")
         vllm_log_files.append(log_file)
 
-        # Prozess asynchron im Hintergrund starten und Logs umleiten
         proc = subprocess.Popen(
             cmd, 
             env=env,
@@ -76,36 +69,13 @@ def start_vllm_servers():
             stderr=log_file
         )
         vllm_processes.append(proc)
-        print(f"   -> vLLM on GPU {gpu} (Port {port}) is spinning up... (Logs: vllm_port_{port}.log)")
+        print(f"   -> vLLM on GPU {gpu} (Port {port}) is spinning up offline... (Logs: vllm_port_{port}.log)")
 
-    # INTELLIGENTES WARTEN: Dynamische Prüfung statt starrer Sleep-Zeit
-    print("⏳ Waiting for vLLM cluster to become available (polling via check_ollama_ready)...")
-    cluster_ready = False
-    max_attempts = 30  # 30 Versuche * 10 Sekunden = 5 Minuten maximale Wartezeit
-    
-    for attempt in range(1, max_attempts + 1):
-        time.sleep(10)
-        
-        # Vorab-Check: Ist einer der Prozesse im Hintergrund bereits unerwartet gecrasht?
-        for i, proc in enumerate(vllm_processes):
-            poll_code = proc.poll()
-            if poll_code is not None:
-                port_failed = ports_and_gpus[i][0]
-                print(f"❌ Error: vLLM process on port {port_failed} terminated early with code {poll_code}.")
-                print(f"👉 Please check the log file: vllm_port_{port_failed}.log")
-                sys.exit(1)
-                
-        # Verfügbarkeit des API-Clusters prüfen
-        if check_ollama_ready():
-            cluster_ready = True
-            print(f"✅ vLLM cluster is ready after {attempt * 10} seconds.")
-            break
-        else:
-            print(f"   ... still waiting for cluster to spin up ({attempt}/{max_attempts}) ...")
+    # Da keine Internetverbindung geprüft werden muss, laden lokale Modelle meist sehr schnell.
+    # 45 Sekunden sind im Offline-Modus für ein 3B Modell auf A100 GPUs absolut ausreichend.
+    print("⏳ Waiting 45 seconds for local models to load into GPU memory...")
+    time.sleep(45)
 
-    if not cluster_ready:
-        print("❌ Error: vLLM cluster failed to stabilize within 5 minutes. Shutting down.")
-        sys.exit(1)
 
 def cleanup_vllm_servers():
     """Schließt alle Hintergrund-Server und Dateihandles, wenn das Skript beendet wird."""
@@ -152,13 +122,11 @@ def main():
     start_vllm_servers()
 
     # ── Preflight checks ─────────────────────────────────────────
-    # Da die Bereitschaft bereits in start_vllm_servers() garantiert wurde,
-    # dient dies als finale Bestätigung vor dem Pipeline-Start.
-    print("🔍 Finalizing vLLM cluster verification...")
+    print("🔍 Checking vLLM cluster availability...")
     if not check_ollama_ready():
         print("❌ vLLM cluster is not ready. Shutting down.")
         sys.exit(1)
-    print("✅ vLLM cluster confirmation successful.\n")
+    print("✅ vLLM cluster is ready.\n")
 
     # ── Load data ─────────────────────────────────────────────────
     print(f"📚 Loading GSM8K ({args.split}) — {args.num_examples} examples...")
