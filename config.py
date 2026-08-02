@@ -79,7 +79,7 @@ AGREEMENT_THRESHOLD = 4
 
 # ── Dataset Settings (Konfiguriert für Ihren 800-Aufgaben-Run) ──
 GSM8K_SPLIT = "train"
-NUM_EXAMPLES = 800           # Auf 800 hochgesetzt
+NUM_EXAMPLES = None           # Auf 800 hochgesetzt
 
 # ── Output ───────────────────────────────────────────────────
 OUTPUT_DIR = "results"

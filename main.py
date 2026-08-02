@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from config import NUM_EXAMPLES, OUTPUT_DIR, GSM8K_SPLIT, OLLAMA_BASE_URL
 from data_loader import load_gsm8k
-from ollama_client import check_ollama_ready, generate
+from ollama_client import generate
 from audit_loop import run_audit_loop
 from evaluation import evaluate_results
 
