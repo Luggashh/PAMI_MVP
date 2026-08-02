@@ -2,7 +2,7 @@ import requests
 import time
 
 def generate(prompt, system_prompt=None, seed=42, timeout=240):
-    url = "http://localhost:11434/api/generate" # oder OLLAMA_BASE_URL nutzen
+    url = "http://localhost:11434/api/generate"
     payload = {
         "model": "llama3.2:3b",
         "prompt": prompt,
@@ -24,7 +24,7 @@ def generate(prompt, system_prompt=None, seed=42, timeout=240):
         except (requests.exceptions.RequestException, Exception) as e:
             if attempt < 2:
                 wartezeit = 5 * (attempt + 1)
-                print(f"\n[⚠️ Timeout/Fehler] Versuch {attempt+1} fehlgeschlagen: {e}. Warte {warzeit}s...")
+                print(f"\n[⚠️ Timeout/Fehler] Versuch {attempt+1} fehlgeschlagen: {e}. Warte {wartezeit}s...")
                 time.sleep(wartezeit)
             else:
                 raise TimeoutError(f"Ollama-Anfrage permanent fehlgeschlagen nach 3 Versuchen. Letzter Fehler: {e}")
